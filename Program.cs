@@ -110,7 +110,7 @@ namespace O365ToOsTicket
                             */
 
                             var osTicketResult = await PostToOSTicket(mContent);
-                            if (osTicketResult != HttpStatusCode.Created)
+                            if (osTicketResult != HttpStatusCode.Created )
                             {
                                 Console.WriteLine("Problem creating ticket. Bailing out");
                                 return;
@@ -155,6 +155,11 @@ namespace O365ToOsTicket
                 Console.WriteLine("Sending...");
                 var response = await client.ExecuteAsync(request, CancellationToken.None);
                 Console.WriteLine($"StatusCode: {response.StatusCode}, Content-Type: {response.ContentType}, Content-Length: {response.ContentLength}):\r\n{response.Content}");
+                if (response.StatusCode == HttpStatusCode.Forbidden) { 
+                    if (response.Content != null && response.Content.Contains("Ticket denied")) {
+                        return HttpStatusCode.OK;
+                    }
+                }
                 return response.StatusCode;
             }
             catch (Exception ex)
