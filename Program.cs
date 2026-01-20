@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Ulrich Strauss. All rights reserved.
 // Licensed under the MIT License.
 
+using Azure.Identity;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Security;
@@ -17,6 +18,8 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -24,17 +27,29 @@ namespace O365ToOsTicket
 {
     class Program
     {
+        static bool NoTickets = false;
+        static bool DebugConsole = false;
+        static StreamWriter logFile;
         static async Task Main(string[] args)
         {
             try
             {
+                NoTickets = args.Any(s => s == "-nt");
+                DebugConsole = args.Any(s => s == "-d");
+                logFile = new StreamWriter("/data/xsp/logs/email.log",true,Encoding.UTF8);
+                Log(DateTime.UtcNow.ToString());
                 await RunAsync();
+                logFile.Flush();
+                logFile.Close();
             }
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine(ex.Message);
+                Console.WriteLine(ex.ToString());
                 Console.ResetColor();
+                Log(ex.ToString());
+                logFile.Flush();
+                logFile.Close();
             }
         }
 
@@ -48,7 +63,7 @@ namespace O365ToOsTicket
 
             // Even if this is a console application here, a daemon application is a confidential client application
             IConfidentialClientApplication app;
-
+            /*
             if (isUsingClientSecret)
             {
                 // Even if this is a console application here, a daemon application is a confidential client application
@@ -70,69 +85,128 @@ namespace O365ToOsTicket
             }
 
             app.AddInMemoryTokenCache();
-
             // With client credentials flows the scopes is ALWAYS of the shape "resource/.default", as the 
             // application permissions need to be set statically (in the portal or by PowerShell), and then granted by
             // a tenant administrator. 
             string[] scopes = new string[] { $"{config.ApiUrl}.default" }; 
             await CallMSGraphUsingGraphSDK(app, scopes);
 
+            */
+            // The client credentials flow requires that you request the
+            // /.default scope, and pre-configure your permissions on the
+            // app registration in Azure. An administrator must grant consent
+            // to those permissions beforehand.
+            var scopes = new[] { "https://graph.microsoft.com/.default" };
+
+            // Values from app registration
+            var clientId = "YOUR_CLIENT_ID";
+            var tenantId = "YOUR_TENANT_ID";
+            var clientSecret = "YOUR_CLIENT_SECRET";
+
+            // using Azure.Identity;
+            var options = new ClientSecretCredentialOptions
+            {
+                AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
+            };
+
+            // https://learn.microsoft.com/dotnet/api/azure.identity.clientsecretcredential
+            var clientSecretCredential = new ClientSecretCredential(
+                config.Tenant, config.ClientId, config.ClientSecret, options);
+
+            var graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+            await CallMSGraphUsingGraphSDK(graphClient);
+
         }
 
-
-        private static async Task CallMSGraphUsingGraphSDK(IConfidentialClientApplication app, string[] scopes)
+        private static void Log(string txt)
         {
-            // Prepare an authenticated MS Graph SDK client
-            GraphServiceClient graphServiceClient = GetAuthenticatedGraphClient(app, scopes);
             try
             {
-                var folders = await graphServiceClient.Users[config.EmailAddress].MailFolders.Request().GetAsync();
+                logFile?.WriteLine(txt);
+            } catch { }
+            if (DebugConsole)
+                Console.WriteLine(txt);
+        }
+        private static async Task CallMSGraphUsingGraphSDK(GraphServiceClient graphServiceClient)
+        {
+            try
+            {
+                var inboxNames = config.Inboxes;
+                var folders = await graphServiceClient.Users[config.EmailAddress].MailFolders.GetAsync();//   .Request().GetAsync();
                 int i = 0;
-                foreach (var folder in folders)
+                foreach (var folder in folders.Value)
                 {
-                    // Console.WriteLine($"{folder.DisplayName}:{folder.TotalItemCount}");
-                    if (folder.DisplayName == config.InboxName)
+                    Log($"{folder.DisplayName}:{folder.TotalItemCount}");
+                    if (folder.DisplayName == "Junk Email")
                     {
-                        var msgs = await graphServiceClient.Users[config.EmailAddress].MailFolders[folder.Id].Messages.Request().Expand("attachments").GetAsync();
-                        foreach (var msg in msgs)
+                        var msgs = await graphServiceClient.Users[config.EmailAddress].MailFolders[folder.Id].Messages.GetAsync();//.Expand("attachments")
+                        foreach (var msg in msgs.Value)
                         {
-                            Console.WriteLine($"{msg.From.EmailAddress.Address} {msg.ReceivedDateTime} {msg.Attachments.Count()} {msg.Subject}");
+                            Log($"JUNK {msg.From?.EmailAddress.Address} {msg.ReceivedDateTime} {msg.Attachments?.Count()} {msg.Subject}"); //.EmailAddress.Address
+                            if (config.DeleteProcessed)
+                                await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].DeleteAsync();                         
+                        }
+                    }
+                    if (inboxNames.Contains(folder.DisplayName.ToLowerInvariant()))
+                    {
+                        var msgs = await graphServiceClient.Users[config.EmailAddress].MailFolders[folder.Id].Messages.GetAsync( (rq) =>
+                        {
+                            rq.QueryParameters.Expand = new string[] { "attachments" };
+                        });//
+                        foreach (var msg in msgs.Value)
+                        {
+                            // Console.WriteLine(JsonSerializer.Serialize(msg));
+                            
+                            if (msg.From == null)
+                            {
+                                Log($"NOFROM {msg.From?.EmailAddress.Address} {msg.ReceivedDateTime} {msg.Attachments?.Count()} {msg.Subject}"); //.EmailAddress.Address
+                                if (config.DeleteProcessed)
+                                    await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].DeleteAsync();
+                                continue;
+                            }
+                            Log($"{msg.From?.EmailAddress.Address} {msg.ReceivedDateTime} {msg.Attachments?.Count()} {msg.Subject}"); //.EmailAddress.Address
                             foreach (var item in msg.Attachments)
                             {
-                                Console.WriteLine($"   {item.Name} {item.Size} {item.ContentType}");
+                                Log($"   {item.Name} {item.Size} {item.ContentType}");
                             }
-                            var mtmsg = await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].Content.Request().GetAsync();
+                            var mtmsg = await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].Content.GetAsync();
                             var mContent = new StreamReader(mtmsg).ReadToEnd();
 
                             /*    
                             - Call https://osticket/api/tickets.email and pipe email into it.
                             - Pipe email into php api/pipe.php
                             */
-
-                            var osTicketResult = await PostToOSTicket(mContent);
-                            if (osTicketResult != HttpStatusCode.Created )
+                            
+                            if (!NoTickets)
                             {
-                                Console.WriteLine("Problem creating ticket. Bailing out");
-                                return;
+                                var osTicketResult = await PostToOSTicket(mContent);
+                                if (osTicketResult != HttpStatusCode.Created)
+                                {
+                                    Log("Problem creating ticket. Bailing out");
+                                    return;
+                                }
                             }
+                            
 #if DUMPINPUT
                             var path = (i++) + ".txt";
-                            using (FileStream outputFileStream = new FileStream(path, FileMode.Create))
+                            File.WriteAllText(path, mContent);
+/*                            using (FileStream outputFileStream = new FileStream(path, FileMode.Create))
                             {
                                 mtmsg.CopyTo(outputFileStream);
                             }
-
+*/
 #endif
+                            
                             if (config.DeleteProcessed)
-                                await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].Request().DeleteAsync();
-
+                                await graphServiceClient.Users[config.EmailAddress].Messages[msg.Id].DeleteAsync();
+                            
                         }
                     }
                 }
             }
             catch (ServiceException e)
             {
-                Console.WriteLine("Could not process emails: " + e);
+                Log("Could not process emails: " + e);
             }
 
         }
@@ -152,28 +226,29 @@ namespace O365ToOsTicket
 
 
 
-                Console.WriteLine("Sending...");
+               // Console.WriteLine("Sending...");
                 var response = await client.ExecuteAsync(request, CancellationToken.None);
-                Console.WriteLine($"StatusCode: {response.StatusCode}, Content-Type: {response.ContentType}, Content-Length: {response.ContentLength}):\r\n{response.Content}");
-                if (response.StatusCode == HttpStatusCode.Forbidden) { 
+                Log($"StatusCode: {response.StatusCode}, Content-Type: {response.ContentType}, Content-Length: {response.ContentLength}):\r\n{response.Content}");
+                if (response.StatusCode == HttpStatusCode.Forbidden) {
                     if (response.Content != null && response.Content.Contains("Ticket denied")) {
-                        return HttpStatusCode.OK;
+                        return HttpStatusCode.Created;
                     }
                 }
                 return response.StatusCode;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error: " + ex);
+                Log("Error: " + ex);
                 return HttpStatusCode.InternalServerError;
             }
         }
-
+        /*
         private static GraphServiceClient GetAuthenticatedGraphClient(IConfidentialClientApplication app, string[] scopes)
         {
 
             GraphServiceClient graphServiceClient =
-                    new GraphServiceClient("https://graph.microsoft.com/V1.0/", new DelegateAuthenticationProvider(async (requestMessage) =>
+                    // "https://graph.microsoft.com/V1.0/"
+                    new GraphServiceClient(app, new DelegateAuthenticationProvider(async (requestMessage) =>
                     {
                         // Retrieve an access token for Microsoft Graph (gets a fresh token if needed).
                         AuthenticationResult result = await app.AcquireTokenForClient(scopes).ExecuteAsync();
@@ -184,7 +259,7 @@ namespace O365ToOsTicket
 
             return graphServiceClient;
         }
-
+        */
 
 
 

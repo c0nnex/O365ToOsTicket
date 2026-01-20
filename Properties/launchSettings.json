@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "O365ToOsTicket": {
+      "commandName": "Project",
+      "commandLineArgs": "-nt -d"
+    }
+  }
+}

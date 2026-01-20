@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 
 namespace O365ToOsTicket
 {
@@ -79,7 +80,7 @@ namespace O365ToOsTicket
         /// Name of the folder to process
         /// </summary>
         public string InboxName { get; set; } = "Inbox";
-
+        public List<string> Inboxes => InboxName.Split(',').Select(x => x.ToLowerInvariant()).ToList();
         /// <summary>
         /// Delete processed emails
         /// </summary>
