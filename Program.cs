@@ -36,7 +36,8 @@ namespace O365ToOsTicket
             {
                 NoTickets = args.Any(s => s == "-nt");
                 DebugConsole = args.Any(s => s == "-d");
-                logFile = new StreamWriter("/data/xsp/logs/email.log",true,Encoding.UTF8);
+                config = AuthenticationConfig.ReadFromJsonFile("appsettings.json");
+                logFile = new StreamWriter(Path.Combine(config.LogDirectory,"email.log"),true,Encoding.UTF8);
                 Log(DateTime.UtcNow.ToString());
                 await RunAsync();
                 logFile.Flush();
@@ -56,53 +57,21 @@ namespace O365ToOsTicket
         private static AuthenticationConfig config;
         private static async Task RunAsync()
         {
-            config = AuthenticationConfig.ReadFromJsonFile("appsettings.json");
+            
 
             // You can run this sample using ClientSecret or Certificate. The code will differ only when instantiating the IConfidentialClientApplication
             bool isUsingClientSecret = IsAppUsingClientSecret(config);
 
             // Even if this is a console application here, a daemon application is a confidential client application
             IConfidentialClientApplication app;
-            /*
-            if (isUsingClientSecret)
-            {
-                // Even if this is a console application here, a daemon application is a confidential client application
-                app = ConfidentialClientApplicationBuilder.Create(config.ClientId)
-                    .WithClientSecret(config.ClientSecret)
-                    .WithAuthority(new Uri(config.Authority))
-                    .Build();
-            }
-
-            else
-            {
-                ICertificateLoader certificateLoader = new DefaultCertificateLoader();
-                certificateLoader.LoadIfNeeded(config.Certificate);
-
-                app = ConfidentialClientApplicationBuilder.Create(config.ClientId)
-                    .WithCertificate(config.Certificate.Certificate)
-                    .WithAuthority(new Uri(config.Authority))
-                    .Build();
-            }
-
-            app.AddInMemoryTokenCache();
-            // With client credentials flows the scopes is ALWAYS of the shape "resource/.default", as the 
-            // application permissions need to be set statically (in the portal or by PowerShell), and then granted by
-            // a tenant administrator. 
-            string[] scopes = new string[] { $"{config.ApiUrl}.default" }; 
-            await CallMSGraphUsingGraphSDK(app, scopes);
-
-            */
+          
             // The client credentials flow requires that you request the
             // /.default scope, and pre-configure your permissions on the
             // app registration in Azure. An administrator must grant consent
             // to those permissions beforehand.
             var scopes = new[] { "https://graph.microsoft.com/.default" };
 
-            // Values from app registration
-            var clientId = "YOUR_CLIENT_ID";
-            var tenantId = "YOUR_TENANT_ID";
-            var clientSecret = "YOUR_CLIENT_SECRET";
-
+           
             // using Azure.Identity;
             var options = new ClientSecretCredentialOptions
             {
@@ -114,7 +83,7 @@ namespace O365ToOsTicket
                 config.Tenant, config.ClientId, config.ClientSecret, options);
 
             var graphClient = new GraphServiceClient(clientSecretCredential, scopes);
-            await CallMSGraphUsingGraphSDK(graphClient);
+            await ProcessIncomingEmails(graphClient);
 
         }
 
@@ -127,7 +96,7 @@ namespace O365ToOsTicket
             if (DebugConsole)
                 Console.WriteLine(txt);
         }
-        private static async Task CallMSGraphUsingGraphSDK(GraphServiceClient graphServiceClient)
+        private static async Task ProcessIncomingEmails(GraphServiceClient graphServiceClient)
         {
             try
             {

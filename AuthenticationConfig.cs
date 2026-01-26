@@ -88,7 +88,7 @@ namespace O365ToOsTicket
 
         public string OsTicketUrl { get; set; }
         public string OsTicketApiKey { get; set; }
-
+        public string LogDirectory { get; set; } = "./";
         /// <summary>
         /// Reads the configuration from a json file
         /// </summary>
